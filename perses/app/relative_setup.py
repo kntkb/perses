@@ -320,6 +320,14 @@ class RelativeFEPSetup(object):
         from openff.toolkit.topology import Molecule
         molecules = [ Molecule.from_openeye(oemol,allow_undefined_stereo=True) for oemol in [self._ligand_oemol_old, self._ligand_oemol_new] ]
 
+        # espaloma
+        #if self._is_protein_espaloma:
+        protein_molecule = Molecule.from_file('target_single_mol_hetatm.pdb', file_format='pdb')
+        #smi = Molecule.to_smiles(mol)
+        #protein_molecule = Molecule.from_smiles(smi)
+        molecules.append(protein_molecule)
+        #------
+
         # Handle spectator molecules
         if self._spectator_filenames is not None:
             # we have spectator molecules to handle
@@ -377,6 +385,7 @@ class RelativeFEPSetup(object):
             _logger.info('Generating the topology proposal from the complex leg')
             _logger.info(f"setting up complex phase...")
             self._setup_complex_phase(protein_pdb_filename,receptor_mol2_filename,mol_list)
+            _logger.info(f"Setup complex phase complete")
             self._complex_topology_old_solvated, self._complex_positions_old_solvated, self._complex_system_old_solvated = self._solvate_system(
             self._complex_topology_old, self._complex_positions_old,phase='complex',box_dimensions=self._complex_box_dimensions, ionic_strength=self._ionic_strength)
             _logger.info(f"successfully generated complex topology, positions, system")
@@ -569,10 +578,28 @@ class RelativeFEPSetup(object):
             protein_pdbfile = open(self._protein_pdb_filename, 'r')
             pdb_file = app.PDBFile(protein_pdbfile)
             protein_pdbfile.close()
-            self._receptor_positions_old = pdb_file.positions
-            self._receptor_topology_old = pdb_file.topology
-            self._receptor_md_topology_old = md.Topology.from_openmm(self._receptor_topology_old)
+            #self._receptor_positions_old = pdb_file.positions
+            #self._receptor_topology_old = pdb_file.topology
+            #self._receptor_md_topology_old = md.Topology.from_openmm(self._receptor_topology_old)
 
+            # espaloma
+            _logger.info(f"Convert protein residues into a single residue. Requirement for espaloma.")
+            #if self._is_protein_espaloma:
+            new_topology = app.Topology()
+            resname = 'XXX'
+            resid = '1'
+            new_chain = new_topology.addChain('A')
+            new_residue = new_topology.addResidue(resname, new_chain, resid)
+            new_atoms = {}
+            for atom in pdb_file.topology.atoms():
+                new_atom = new_topology.addAtom(atom.name, atom.element, new_residue, atom.id)
+                new_atoms[atom] = new_atom
+            for bond in pdb_file.topology.bonds():
+                if bond[0] in new_atoms and bond[1] in new_atoms:
+                    new_topology.addBond(new_atoms[bond[0]], new_atoms[bond[1]])
+            self._receptor_positions_old = pdb_file.positions
+            self._receptor_topology_old = new_topology
+            self._receptor_md_topology_old = md.Topology.from_openmm(self._receptor_topology_old)
         elif receptor_mol2_filename:
             self._receptor_mol2_filename = receptor_mol2_filename
             self._receptor_mol = createOEMolFromSDF(self._receptor_mol2_filename)
@@ -583,6 +610,7 @@ class RelativeFEPSetup(object):
         else:
             raise ValueError("You need to provide either a protein pdb or a receptor mol2 to run a complex simulation.")
 
+        _logger.info(f"Join receptor and ligand topology")
         self._complex_md_topology_old = self._receptor_md_topology_old.join(self._ligand_md_topology_old)
 
         n_atoms_spectators = 0
@@ -839,13 +867,16 @@ class RelativeFEPSetup(object):
             if box_dimensions is None:
                 _logger.info(f'solvent padding: {self._padding}')
                 modeller.addSolvent(self._system_generator.forcefield, model=model, padding=self._padding, ionicStrength=ionic_strength)
+                _logger.info(f'Finished solvation')
             else:
                 _logger.info(f'box_dimensions: {box_dimensions}')
                 modeller.addSolvent(self._system_generator.forcefield, model=model, ionicStrength=ionic_strength, boxSize=box_dimensions)
+        _logging.info(f"Getting topology...")
         solvated_topology = modeller.getTopology()
         if phase == 'complex' and self._padding == 0. and box_dimensions is not None:
             _logger.info(f'Complex phase, where padding is set to 0. and box dimensions are provided so setting unit cell dimensions')
             solvated_topology.setUnitCellDimensions(box_dimensions)
+        _logging.info(f"Getting positions...")
         solvated_positions = modeller.getPositions()
 
         # canonicalize the solvated positions: turn tuples into np.array
